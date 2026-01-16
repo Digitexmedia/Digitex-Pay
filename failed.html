@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Payment Failed | Digitex Pay</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #2b0f14, #3a1d22, #4a2328);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ffffff;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            padding: 20px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            padding: 40px 30px;
+            text-align: center;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+        }
+
+        .icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            border-radius: 50%;
+            background: rgba(255, 90, 90, 0.25);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 38px;
+            color: #ff5a5a;
+        }
+
+        h2 {
+            margin-bottom: 10px;
+        }
+
+        .message {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 28px;
+        }
+
+        .details {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px;
+            font-size: 13px;
+            margin-bottom: 28px;
+        }
+
+        .details div {
+            margin-bottom: 6px;
+            opacity: 0.85;
+        }
+
+        .actions a {
+            display: inline-block;
+            margin: 8px;
+            padding: 12px 26px;
+            border-radius: 25px;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .retry {
+            background: #ff5a5a;
+            color: #ffffff;
+        }
+
+        .home {
+            background: rgba(255,255,255,0.2);
+            color: #ffffff;
+        }
+
+        .actions a:hover {
+            transform: translateY(-2px);
+        }
+
+        .footer {
+            margin-top: 25px;
+            font-size: 12px;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+
+        <div class="icon">✕</div>
+
+        <h2>Payment Failed</h2>
+        <p class="message">
+            Your payment could not be completed.  
+            This may be due to cancellation, timeout, or insufficient balance.
+        </p>
+
+        <div class="details">
+            <div>• No money was deducted (in most cases)</div>
+            <div>• You can safely try again</div>
+            <div>• Choose a different payment method if needed</div>
+        </div>
+
+        <div class="actions">
+            <a href="pay.html" class="retry">Try Again</a>
+            <a href="index.html" class="home">Go to Home</a>
+        </div>
+
+        <div class="footer">
+            © Digitex Pay — Secure Payment Gateway
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>
