@@ -1,35 +1,47 @@
 <?php
+
+// Security check
 if (!defined('ADDFUNDS')) {
     http_response_code(404);
-    die();
+    exit;
 }
 
-// Get Pesapal configuration from method extras
-$consumerKey = $methodExtras["consumerKey"];
-$consumerSecret = $methodExtras["consumerSecret"];
-$environment = $methodExtras["environment"] ?? "sandbox"; // sandbox or live
+// ================================
+// LOAD PESAPAL CONFIG
+// ================================
+$consumerKey    = $methodExtras["consumerKey"] ?? null;
+$consumerSecret = $methodExtras["consumerSecret"] ?? null;
+$environment    = $methodExtras["environment"] ?? "sandbox"; // sandbox | live
 
 if (empty($consumerKey) || empty($consumerSecret)) {
     errorExit("Pesapal is not configured properly. Please contact administrator.");
 }
 
-// Set API base URL based on environment
-$apiBaseUrl = ($environment === "live") 
-    ? "https://api.pesapal.com/v3" 
+// ================================
+// API BASE URL
+// ================================
+$apiBaseUrl = ($environment === "live")
+    ? "https://api.pesapal.com/v3"
     : "https://cybqa.pesapal.com/pesapalv3";
 
-// Generate unique order ID
+// ================================
+// GENERATE UNIQUE ORDER ID
+// ================================
 $orderId = "PESAPAL_" . md5(RAND_STRING(5) . time() . $user["client_id"]);
 
-// Prepare callback URLs
+// ================================
+// CALLBACK & REDIRECT URLS
+// ================================
 $callbackURL = site_url("payment/" . $methodCallback);
 $redirectURL = site_url("addfunds?status=success");
 
-// Step 1: Get OAuth Access Token
+// ================================
+// STEP 1: REQUEST ACCESS TOKEN
+// ================================
 $tokenUrl = $apiBaseUrl . "/api/Auth/RequestToken";
 
-$tokenData = [
-    "consumer_key" => $consumerKey,
+$tokenPayload = [
+    "consumer_key"    => $consumerKey,
     "consumer_secret" => $consumerSecret
 ];
 
@@ -38,46 +50,42 @@ $tokenHeaders = [
     "Accept: application/json"
 ];
 
-$tokenCurl = curl_init();
-curl_setopt_array($tokenCurl, [
-    CURLOPT_URL => $tokenUrl,
+$ch = curl_init($tokenUrl);
+curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => json_encode($tokenData),
-    CURLOPT_HTTPHEADER => $tokenHeaders,
+    CURLOPT_POST           => true,
+    CURLOPT_POSTFIELDS     => json_encode($tokenPayload),
+    CURLOPT_HTTPHEADER     => $tokenHeaders,
     CURLOPT_SSL_VERIFYPEER => true,
-    CURLOPT_TIMEOUT => 30
+    CURLOPT_TIMEOUT        => 30
 ]);
 
-$tokenResponse = curl_exec($tokenCurl);
-$tokenHttpCode = curl_getinfo($tokenCurl, CURLINFO_HTTP_CODE);
-$tokenError = curl_error($tokenCurl);
-curl_close($tokenCurl);
+$tokenResponse = curl_exec($ch);
+$tokenError    = curl_error($ch);
+$httpCode      = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
 
 if ($tokenError) {
-    errorExit("Failed to connect to Pesapal API: " . $tokenError);
+    errorExit("Pesapal connection error: " . $tokenError);
 }
 
 $tokenResult = json_decode($tokenResponse, true);
 
-if ($tokenHttpCode !== 200 || !isset($tokenResult["token"])) {
-    $errorMessage = isset($tokenResult["error"]) ? $tokenResult["error"] : "Failed to get access token";
-    errorExit("Pesapal authentication failed: " . $errorMessage);
+if ($httpCode !== 200 || empty($tokenResult["token"])) {
+    errorExit("Pesapal authentication failed.");
 }
 
 $accessToken = $tokenResult["token"];
 
-// Step 2: Submit Payment Order
+// ================================
+// STEP 2: SUBMIT PAYMENT ORDER
+// ================================
 $orderUrl = $apiBaseUrl . "/api/Transactions/SubmitOrderRequest";
 
-// Format payment amount (Pesapal expects amount in the currency's smallest unit)
-$paymentAmountFormatted = number_format($paymentAmount, 2, '.', '');
-
-// Prepare order data
 $orderData = [
     "id" => $orderId,
     "currency" => $methodCurrency,
-    "amount" => floatval($paymentAmountFormatted),
+    "amount" => round($paymentAmount, 2),
     "description" => "Balance Recharge - " . $user["username"],
     "callback_url" => $callbackURL,
     "redirect_mode" => "",
@@ -85,17 +93,16 @@ $orderData = [
     "branch" => "",
     "billing_address" => [
         "email_address" => $user["email"],
-        "phone_number" => $user["telephone"] ?? "",
-        "country_code" => "",
-        "first_name" => $user["name"] ?? "Customer",
-        "middle_name" => "",
-        "last_name" => "",
-        "line_1" => "",
-        "line_2" => "",
-        "city" => "",
-        "state" => "",
-        "postal_code" => "",
-        "zip_code" => ""
+        "phone_number"  => $user["telephone"] ?? "",
+        "first_name"    => $user["name"] ?? "Customer",
+        "last_name"     => "",
+        "country_code"  => "",
+        "line_1"        => "",
+        "line_2"        => "",
+        "city"          => "",
+        "state"         => "",
+        "postal_code"   => "",
+        "zip_code"      => ""
     ]
 ];
 
@@ -105,70 +112,61 @@ $orderHeaders = [
     "Accept: application/json"
 ];
 
-$orderCurl = curl_init();
-curl_setopt_array($orderCurl, [
-    CURLOPT_URL => $orderUrl,
+$ch = curl_init($orderUrl);
+curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => json_encode($orderData),
-    CURLOPT_HTTPHEADER => $orderHeaders,
+    CURLOPT_POST           => true,
+    CURLOPT_POSTFIELDS     => json_encode($orderData),
+    CURLOPT_HTTPHEADER     => $orderHeaders,
     CURLOPT_SSL_VERIFYPEER => true,
-    CURLOPT_TIMEOUT => 30
+    CURLOPT_TIMEOUT        => 30
 ]);
 
-$orderResponse = curl_exec($orderCurl);
-$orderHttpCode = curl_getinfo($orderCurl, CURLINFO_HTTP_CODE);
-$orderError = curl_error($orderCurl);
-curl_close($orderCurl);
+$orderResponse = curl_exec($ch);
+$orderError    = curl_error($ch);
+$orderHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
 
 if ($orderError) {
-    errorExit("Failed to create Pesapal order: " . $orderError);
+    errorExit("Pesapal order error: " . $orderError);
 }
 
 $orderResult = json_decode($orderResponse, true);
 
-if ($orderHttpCode !== 200 || !isset($orderResult["redirect_url"])) {
-    $errorMessage = isset($orderResult["error"]) ? $orderResult["error"] : "Failed to create payment order";
-    if (isset($orderResult["message"])) {
-        $errorMessage = $orderResult["message"];
-    }
-    errorExit("Pesapal order creation failed: " . $errorMessage);
+if ($orderHttpCode !== 200 || empty($orderResult["redirect_url"])) {
+    errorExit("Pesapal order creation failed.");
 }
 
-$redirectUrl = $orderResult["redirect_url"];
-$orderTrackingId = $orderResult["order_tracking_id"] ?? $orderId;
-
-// Insert payment record into database
-$insert = $conn->prepare(
-    "INSERT INTO payments SET
-    client_id=:client_id,
-    payment_amount=:amount,
-    payment_method=:method,
-    payment_mode=:mode,
-    payment_create_date=:date,
-    payment_ip=:ip,
-    payment_extra=:extra,
-    payment_extra2=:tracking_id"
-);
+// ================================
+// SAVE PAYMENT TO DATABASE
+// ================================
+$insert = $conn->prepare("
+    INSERT INTO payments SET
+        client_id = :client_id,
+        payment_amount = :amount,
+        payment_method = :method,
+        payment_mode = 'Automatic',
+        payment_create_date = :date,
+        payment_ip = :ip,
+        payment_extra = :order_id,
+        payment_extra2 = :tracking_id
+");
 
 $insert->execute([
-    "client_id" => $user["client_id"],
-    "amount" => $paymentAmount,
-    "method" => $methodId,
-    "mode" => "Automatic",
-    "date" => date("Y.m.d H:i:s"),
-    "ip" => GetIP(),
-    "extra" => $orderId,
-    "tracking_id" => $orderTrackingId
+    "client_id"   => $user["client_id"],
+    "amount"      => $paymentAmount,
+    "method"      => $methodId,
+    "date"        => date("Y-m-d H:i:s"),
+    "ip"          => GetIP(),
+    "order_id"    => $orderId,
+    "tracking_id" => $orderResult["order_tracking_id"] ?? $orderId
 ]);
 
-// Create redirect form
-$redirectForm .= '<script type="text/javascript">
-    window.location.href = "' . $redirectUrl . '";
-</script>';
-
+// ================================
+// REDIRECT USER TO PESAPAL
+// ================================
 $response["success"] = true;
-$response["message"] = "Your payment has been initiated and you will now be redirected to the payment gateway.";
-$response["content"] = $redirectForm;
+$response["message"] = "Redirecting to Pesapal payment page...";
+$response["content"] = '<script>window.location.href="' . $orderResult["redirect_url"] . '";</script>';
 
 ?>
