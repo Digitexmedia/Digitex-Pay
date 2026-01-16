@@ -1,98 +1,161 @@
 <?php
 
-namespace APU\Gateway\Binance;
+require_once __DIR__ . "/../core/GatewayInterface.php";
+require_once __DIR__ . "/../config/gateways.php";
 
-use API\Controllers\Controller;
-use API\Controllers\PaymentController;
-use App\Lib\CurlRequest;
-use App\Models\Deposit;
-use App\Models\Gateway;
-use Illuminate\Support\Str;
-
-class ProcessController extends Controller
+class Binance implements GatewayInterface
 {
-    public static function process($deposit)
+    private $apiKey;
+    private $secretKey;
+
+    public function __construct()
     {
-        $binanceAcc   = json_decode($deposit->gatewayCurrency()->gateway_parameter);
-        $nonce = Str::random(32);
+        $gateways = require __DIR__ . "/../config/gateways.php";
+
+        if (!isset($gateways['binance'])) {
+            throw new Exception("Binance Pay gateway disabled");
+        }
+
+        $this->apiKey    = $gateways['binance']['api_key'];
+        $this->secretKey = $gateways['binance']['client_secret'];
+    }
+
+    /**
+     * =========================
+     * INITIATE BINANCE PAYMENT
+     * =========================
+     */
+    public function initiatePayment(array $data): array
+    {
+        if (empty($data['amount']) || empty($data['currency'])) {
+            return [
+                "status" => false,
+                "message" => "Amount and currency are required"
+            ];
+        }
+
+        $nonce     = bin2hex(random_bytes(16));
         $timestamp = round(microtime(true) * 1000);
-        $request = array(
-            "env" => array(
+        $reference = $data['reference'] ?? uniqid("DP_");
+
+        $request = [
+            "env" => [
                 "terminalType" => "APP"
-            ),
-            "merchantTradeNo" => $deposit->trx,
-            "orderAmount" => $deposit->final_amount,
-            "currency" => $deposit->method_currency,
-            "goods" => array(
-                "goodsType" =>  "01",
+            ],
+            "merchantTradeNo" => $reference,
+            "orderAmount" => $data['amount'],
+            "currency" => $data['currency'],
+            "goods" => [
+                "goodsType" => "01",
                 "goodsCategory" => "Z000",
-                "referenceGoodsId" =>  $deposit->trx,
-                "goodsName" => "Deposit to " . gs('site_name'),
-                "goodsDetail" => "Deposit to " . gs('site_name')
-            ),
-        );
-        $jsonRequest        = json_encode($request);
-        $payload            = $timestamp . "\n" . $nonce . "\n" . $jsonRequest . "\n";
-        $apiKey             = $binanceAcc->api_key;
-        $secretKey          = $binanceAcc->secret_key;
-        $signature          = strtoupper(hash_hmac('SHA512', $payload, $secretKey));
+                "referenceGoodsId" => $reference,
+                "goodsName" => "Digitex Pay Payment",
+                "goodsDetail" => "Digitex Pay Payment"
+            ]
+        ];
 
-        $headers            = array();
-        $headers[]          = "Content-Type: application/json";
-        $headers[]          = "BinancePay-Timestamp: $timestamp";
-        $headers[]          = "BinancePay-Nonce: $nonce";
-        $headers[]          = "BinancePay-Certificate-SN: $apiKey";
-        $headers[]          = "BinancePay-Signature: $signature";
+        $jsonRequest = json_encode($request);
+        $payload     = $timestamp . "\n" . $nonce . "\n" . $jsonRequest . "\n";
+        $signature   = strtoupper(hash_hmac("SHA512", $payload, $this->secretKey));
 
-        $result = CurlRequest::curlPostContent('https://bpay.binanceapi.com/binancepay/openapi/v2/order',$request,$headers);
+        $headers = [
+            "Content-Type: application/json",
+            "BinancePay-Timestamp: $timestamp",
+            "BinancePay-Nonce: $nonce",
+            "BinancePay-Certificate-SN: {$this->apiKey}",
+            "BinancePay-Signature: $signature"
+        ];
 
-        $result = json_decode($result);
+        $ch = curl_init("https://bpay.binanceapi.com/binancepay/openapi/v2/order");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonRequest);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
-        if (@$result->status == "SUCCESS") {
-            $send['redirect'] = true;
-            $send['redirect_url'] = @$result->data->checkoutUrl;
-        } else {
-            $send['error']     = true;
-            $send['message'] = (@$result->msg) ? @$result->errorMessage : 'Something went wrong';
+        $response = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error || !$response) {
+            return [
+                "status" => false,
+                "message" => "Unable to connect to Binance Pay"
+            ];
         }
-        return json_encode($send);
+
+        $result = json_decode($response, true);
+
+        if (isset($result['status']) && $result['status'] === "SUCCESS") {
+            return [
+                "status" => true,
+                "redirect_url" => $result['data']['checkoutUrl'],
+                "reference" => $reference
+            ];
+        }
+
+        return [
+            "status" => false,
+            "message" => $result['errorMessage'] ?? "Binance payment failed"
+        ];
     }
 
-    public function ipn(){
-        $binance = Gateway::where('alias', 'Binance')->first();
-        $binanceAcc   = json_decode($binance->gateway_parameters);
-        $deposits = Deposit::initiated()->where('method_code', $binance->code)->where('created_at','>=',now()->subHours(24))->orderBy('last_cron')->limit(10)->get();
-        $apiKey    = $binanceAcc->api_key->value;
-        $secretKey = $binanceAcc->secret_key->value;
-        $url = "https://bpay.binanceapi.com/binancepay/openapi/v2/order/query";
+    /**
+     * =========================
+     * VERIFY BINANCE PAYMENT
+     * =========================
+     */
+    public function verifyPayment(string $reference): array
+    {
+        $nonce     = bin2hex(random_bytes(16));
+        $timestamp = round(microtime(true) * 1000);
 
-        foreach ($deposits as $deposit) {
-            $deposit->last_cron = time();
-            $deposit->save();
-            $nonce = Str::random(32);
-            $timestamp = round(microtime(true) * 1000);
+        $request = [
+            "merchantTradeNo" => $reference
+        ];
 
-            $request = array(
-                "merchantTradeNo" => $deposit->trx,
-            );
+        $jsonRequest = json_encode($request);
+        $payload     = $timestamp . "\n" . $nonce . "\n" . $jsonRequest . "\n";
+        $signature   = strtoupper(hash_hmac("SHA512", $payload, $this->secretKey));
 
-            $jsonRequest       = json_encode($request);
-            $payload            = $timestamp . "\n" . $nonce . "\n" . $jsonRequest . "\n";
-            $signature          = strtoupper(hash_hmac('SHA512', $payload, $secretKey));
-            $headers            = array();
-            $headers[]          = "Content-Type: application/json";
-            $headers[]          = "BinancePay-Timestamp: $timestamp";
-            $headers[]          = "BinancePay-Nonce: $nonce";
-            $headers[]          = "BinancePay-Certificate-SN: $apiKey";
-            $headers[]          = "BinancePay-Signature: $signature";
+        $headers = [
+            "Content-Type: application/json",
+            "BinancePay-Timestamp: $timestamp",
+            "BinancePay-Nonce: $nonce",
+            "BinancePay-Certificate-SN: {$this->apiKey}",
+            "BinancePay-Signature: $signature"
+        ];
 
-            $result = CurlRequest::curlPostContent($url,$request,$headers);
-            $result = json_decode($result);
-            if (@$result->data && @$result->data->status == "PAID" && @$result->data->orderAmount == $deposit->final_amount) {
-                PaymentController::userDataUpdate($deposit);
-            }
+        $ch = curl_init("https://bpay.binanceapi.com/binancepay/openapi/v2/order/query");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonRequest);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        if (!$response) {
+            return [
+                "status" => false,
+                "message" => "Unable to verify Binance payment"
+            ];
         }
+
+        return json_decode($response, true);
     }
 
+    /**
+     * =========================
+     * REFUND (NOT SUPPORTED)
+     * =========================
+     */
+    public function refund(string $reference, float $amount): array
+    {
+        return [
+            "status" => false,
+            "message" => "Binance Pay refunds not supported"
+        ];
+    }
 }
