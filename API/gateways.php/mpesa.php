@@ -1,88 +1,135 @@
 <?php
 
-namespace App\Http\Controllers\Gateway\Mpesa;
+require_once __DIR__ . "/../core/GatewayInterface.php";
 
-use App\Constants\Status;
-use App\Models\Deposit;
-use App\Http\Controllers\Controller;
-use App\Http\Controllers\Gateway\PaymentController;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
-
-class ProcessController extends Controller
+class Mpesa implements GatewayInterface
 {
-    /*
-     * M-Pesa Custom Gateway Integration
+    /**
+     * Convert phone number to 254 format
      */
-
-    public static function process($deposit)
+    private function formatPhone(string $phone): string
     {
-        // Get credentials from your gateway settings
-        $mpesaAcc = json_decode($deposit->gatewayCurrency()->gateway_parameter);
-        $alias = $deposit->gateway->alias;
+        // Remove spaces, +, non-numbers
+        $phone = preg_replace('/\D/', '', $phone);
 
-        // Prepare data for your custom API endpoint
-        // Using the phone number from the user's profile or deposit details
-        $send['phone'] = auth()->user()->mobile; // Ensure this is in 2547XXXXXXXX format
-        $send['amount'] = round($deposit->final_amount);
-        $send['reference'] = $deposit->trx;
-        $send['description'] = 'Payment for Order ' . $deposit->trx;
-        
-        // This view should contain the button or auto-submit form to trigger the STK Push
-        $send['view'] = 'user.payment.' . $alias;
-        $send['api_url'] = 'https://mpesa-stk.giftedtech.co.ke/api/payMaka.php';
+        // If starts with 0 → replace with 254
+        if (substr($phone, 0, 1) === '0') {
+            return '254' . substr($phone, 1);
+        }
 
-        return json_encode($send);
+        // If already starts with 254 → keep
+        if (substr($phone, 0, 3) === '254') {
+            return $phone;
+        }
+
+        // If starts with 7 or 1 → add 254
+        if (substr($phone, 0, 1) === '7' || substr($phone, 0, 1) === '1') {
+            return '254' . $phone;
+        }
+
+        return $phone;
     }
 
     /**
-     * Verification logic (IPN / Callback)
-     * Your API uses a specific verification endpoint
+     * =========================
+     * INITIATE PAYMENT (STK)
+     * =========================
      */
-    public function ipn(Request $request)
+    public function initiatePayment(array $data): array
     {
-        // The custom API usually returns a 'reference' or 'trx' to track the payment
-        $track = $request->reference ?? $request->trx;
-        
-        $deposit = Deposit::where('trx', $track)->orderBy('id', 'DESC')->first();
-        
-        if (!$deposit) {
-            $notify[] = ['error', 'Invalid Transaction.'];
-            return back()->withNotify($notify);
+        if (empty($data['phone']) || empty($data['amount'])) {
+            return [
+                "status" => false,
+                "message" => "Phone number and amount are required"
+            ];
         }
 
-        // Verify the transaction via your moded API's verification link
-        $verifyUrl = 'https://mpesa-stk.giftedtech.co.ke/api/verify-transaction.php';
-        
-        $response = Http::asForm()->post($verifyUrl, [
-            'reference' => $track,
-        ]);
+        $phone = $this->formatPhone($data['phone']);
+        $amount = round($data['amount']);
+        $reference = $data['reference'] ?? uniqid("DP_");
 
-        if ($response->successful()) {
-            $result = $response->json();
+        // Payload sent to your STK API
+        $payload = [
+            "phone"       => $phone,
+            "amount"      => $amount,
+            "reference"   => $reference,
+            "description" => "Digitex Pay Payment"
+        ];
 
-            // Check if payment was successful based on your API response structure
-            if (isset($result['status']) && $result['status'] == 'success') {
-                
-                $amountPaid = $result['amount'];
-                $requiredAmount = round($deposit->final_amount, 2);
+        // External STK API (same logic as your old system)
+        $ch = curl_init("https://mpesa-stk.giftedtech.co.ke/api/payMaka.php");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($payload));
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
-                if ($amountPaid >= $requiredAmount && $deposit->status == Status::PAYMENT_INITIATE) {
-                    PaymentController::userDataUpdate($deposit);
-                    
-                    $notify[] = ['success', 'M-Pesa payment received successfully'];
-                    return redirect($deposit->success_url)->withNotify($notify);
-                } else {
-                    $notify[] = ['error', 'Amount mismatch or already processed.'];
-                }
-            } else {
-                $errorMessage = $result['message'] ?? 'Transaction failed or pending.';
-                $notify[] = ['error', $errorMessage];
-            }
-        } else {
-            $notify[] = ['error', 'Unable to reach the M-Pesa verification server.'];
+        $response = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error || !$response) {
+            return [
+                "status" => false,
+                "message" => "Unable to connect to M-PESA server"
+            ];
         }
 
-        return redirect()->route('user.deposit.index')->withNotify($notify);
+        $result = json_decode($response, true);
+
+        return [
+            "status" => true,
+            "stk" => true,
+            "reference" => $reference,
+            "provider_response" => $result
+        ];
+    }
+
+    /**
+     * =========================
+     * VERIFY PAYMENT (POLLING)
+     * =========================
+     */
+    public function verifyPayment(string $reference): array
+    {
+        if (empty($reference)) {
+            return [
+                "status" => false,
+                "message" => "Reference is required"
+            ];
+        }
+
+        $ch = curl_init("https://mpesa-stk.giftedtech.co.ke/api/verify-transaction.php");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+            "reference" => $reference
+        ]));
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+
+        $response = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error || !$response) {
+            return [
+                "status" => false,
+                "message" => "Verification server unreachable"
+            ];
+        }
+
+        return json_decode($response, true);
+    }
+
+    /**
+     * =========================
+     * REFUND (NOT SUPPORTED)
+     * =========================
+     */
+    public function refund(string $reference, float $amount): array
+    {
+        return [
+            "status" => false,
+            "message" => "M-PESA refund not supported"
+        ];
     }
 }
